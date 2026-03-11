@@ -164,10 +164,9 @@ class WebRTCAudioHub:
                     'file_md5': file_md5,
                     'create_time': int(time.time() * 1000)
                 }
-                print(json.dumps(parameter, ensure_ascii=True))
                 # Send the chunk
                 self.logger.info(f"Sending chunk {i}/{total_chunks}")
-                
+
                 response = await self.data_channel.pub_sub.publish_request_new(
                     "rt/api/audiohub/request",
                     {
@@ -230,14 +229,11 @@ class WebRTCAudioHub:
             # Convert to base64
             b64_data = base64.b64encode(audio_data).decode('utf-8')
             
-            # Split into smaller chunks (4KB each)
-            chunk_size = 4096
+            # Split into 32KB chunks
+            chunk_size = 32768
             chunks = [b64_data[i:i + chunk_size] for i in range(0, len(b64_data), chunk_size)]
             total_chunks = len(chunks)
-            
-            self.logger.info(f"Splitting file into {total_chunks} chunks")
 
-            # Send each chunk
             for i, chunk in enumerate(chunks, 1):
                 parameter = {
                     'current_block_size': len(chunk),
@@ -245,10 +241,6 @@ class WebRTCAudioHub:
                     'current_block_index': i,
                     'total_block_number': total_chunks
                 }
-                print(json.dumps(parameter, ensure_ascii=True))
-                # Send the chunk
-                self.logger.info(f"Sending chunk {i}/{total_chunks}")
-                
                 response = await self.data_channel.pub_sub.publish_request_new(
                     "rt/api/audiohub/request",
                     {
@@ -256,9 +248,6 @@ class WebRTCAudioHub:
                         "parameter": json.dumps(parameter, ensure_ascii=True)
                     }
                 )
-                
-                # Wait a small amount between chunks
-                await asyncio.sleep(0.1)
                 
             self.logger.info("All chunks sent")
             return response

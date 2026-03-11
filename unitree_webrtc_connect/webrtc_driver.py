@@ -158,15 +158,20 @@ class UnitreeWebRTCConnection:
             logging.info("Track recieved: %s", track.kind)
 
             if track.kind == "video":
-                #await for the first frame, #ToDo make the code more nicer
-                frame = await track.recv()
-                await self.video.track_handler(track)
-                
-            if track.kind == "audio":
-                frame = await track.recv()
-                while True:
+                try:
                     frame = await track.recv()
-                    await self.audio.frame_handler(frame)
+                    await self.video.track_handler(track)
+                except Exception:
+                    pass
+
+            if track.kind == "audio":
+                try:
+                    frame = await track.recv()
+                    while True:
+                        frame = await track.recv()
+                        await self.audio.frame_handler(frame)
+                except Exception:
+                    pass
 
         logging.info("Creating offer...")
         offer = await self.pc.createOffer()

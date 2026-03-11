@@ -155,17 +155,10 @@ def send_sdp_to_remote_peer(serial: str, sdp: str, access_token: str, public_key
 
 def send_sdp_to_local_peer(ip, sdp):
     try:
-        # Try the old method first
-        logging.info("Trying to send SDP using the old method...")
-        response = send_sdp_to_local_peer_old_method(ip, sdp)
-        if response:
-            logging.info("SDP successfully sent using the old method.")
-            return response
-        else:
-            logging.warning("Old method failed, trying the new method...")
-    except Exception as e:
-        logging.error(f"An error occurred with the old method: {e}")
-        logging.info("Falling back to the new method...")
+        # Try the new method directly (old method on port 8081 is not supported on all firmware)
+        pass
+    except Exception:
+        pass
 
     # Now try the new method after the old method has failed
     try:
