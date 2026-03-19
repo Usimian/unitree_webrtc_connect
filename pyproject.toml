@@ -20,7 +20,8 @@ dependencies = [
     "sounddevice",
     "pyaudio",
     "pydub",
-    "opencv-python"
+    "opencv-python",
+    "ultralytics"
 ]
 
 [build-system]

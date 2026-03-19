@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Go2 VR Control</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0a0a0a; color: #e0e0e0; font-family: 'Courier New', monospace; overflow: hidden; }
+
+    #overlay {
+      position: fixed; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 16px; padding: 20px;
+      background: #0a0a0a;
+      z-index: 10;
+    }
+    #overlay h1 { font-size: 28px; color: #00e5ff; letter-spacing: 2px; }
+    #overlay .subtitle { font-size: 13px; color: #888; }
+
+    #status-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: #f44; display: inline-block;
+      margin-right: 6px; vertical-align: middle;
+    }
+    #status-dot.ok { background: #4f4; }
+
+    #controls-table { font-size: 12px; color: #aaa; border-collapse: collapse; }
+    #controls-table td { padding: 3px 12px; }
+    #controls-table td:first-child { color: #00e5ff; text-align: right; }
+
+    #vr-btn-wrap { margin-top: 12px; }
+
+    /* Three.js canvas fills the body when overlay hidden */
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+
+<div id="overlay">
+  <h1>GO2 VR CONTROL</h1>
+  <p class="subtitle">
+    <span id="status-dot"></span>
+    <span id="status-text">Connecting to server…</span>
+  </p>
+
+  <table id="controls-table">
+    <tr><td>Head</td>         <td>Robot body orientation</td></tr>
+    <tr><td>Left stick</td>   <td>Forward / back / strafe</td></tr>
+    <tr><td>Right stick X</td><td>Rotate</td></tr>
+    <tr><td>A button</td>     <td>Lie down</td></tr>
+    <tr><td>B button</td>     <td>Stand up</td></tr>
+    <tr><td>X button</td>     <td>Toggle head light</td></tr>
+    <tr><td>Y button</td>     <td>Stop movement</td></tr>
+    <tr><td>Grip (either)</td><td>Recenter head tracking</td></tr>
+  </table>
+
+  <div id="vr-btn-wrap"></div>
+</div>
+
+<!-- Socket.IO v4 client (matches python-socketio 5.x server) -->
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+
+<!-- Three.js via import map (Quest browser supports this) -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { VRButton } from 'three/addons/webxr/VRButton.js';
+
+// ── Socket.IO ─────────────────────────────────────────────────────────────────
+const socket = io({ secure: true, rejectUnauthorized: false });
+const statusDot  = document.getElementById('status-dot');
+const statusText = document.getElementById('status-text');
+
+socket.on('connect',    () => { statusDot.className = 'ok'; statusText.textContent = 'Connected — click Enter VR'; });
+socket.on('disconnect', () => { statusDot.className = '';   statusText.textContent = 'Disconnected'; });
+
+// ── Three.js renderer ─────────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.xr.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+// VR button — inject into overlay area
+const vrBtn = VRButton.createButton(renderer);
+document.getElementById('vr-btn-wrap').appendChild(vrBtn);
+
+// Hide overlay once VR starts
+renderer.xr.addEventListener('sessionstart', () => {
+  document.getElementById('overlay').style.display = 'none';
+});
+renderer.xr.addEventListener('sessionend', () => {
+  document.getElementById('overlay').style.display = 'flex';
+});
+
+// ── Scene ─────────────────────────────────────────────────────────────────────
+const scene  = new THREE.Scene();
+scene.background = new THREE.Color(0x101010);
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 100);
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+
+// Floor grid for spatial reference
+scene.add(new THREE.GridHelper(20, 20, 0x2a2a2a, 0x1a1a1a));
+
+// ── Camera screen ─────────────────────────────────────────────────────────────
+// Offscreen canvas receives decoded JPEG frames
+const vidCanvas = document.createElement('canvas');
+vidCanvas.width  = 1280;
+vidCanvas.height = 720;
+const vidCtx = vidCanvas.getContext('2d');
+vidCtx.fillStyle = '#111';
+vidCtx.fillRect(0, 0, 1280, 720);
+vidCtx.fillStyle = '#333';
+vidCtx.font = '48px monospace';
+vidCtx.textAlign = 'center';
+vidCtx.fillText('Waiting for camera…', 640, 375);
+
+const screenTex = new THREE.CanvasTexture(vidCanvas);
+screenTex.colorSpace = THREE.SRGBColorSpace;
+
+// Bezel (slightly larger dark panel behind screen)
+const bezel = new THREE.Mesh(
+  new THREE.PlaneGeometry(3.76, 2.17),
+  new THREE.MeshBasicMaterial({ color: 0x181818 })
+);
+bezel.position.set(0, 1.62, -2.3);
+scene.add(bezel);
+
+// Screen surface
+const screen = new THREE.Mesh(
+  new THREE.PlaneGeometry(3.56, 2.0),
+  new THREE.MeshBasicMaterial({ map: screenTex })
+);
+screen.position.set(0, 1.62, -2.28);
+scene.add(screen);
+
+// ── Receive video frames from server ─────────────────────────────────────────
+const frameImg = new Image();
+frameImg.onload = () => {
+  vidCtx.drawImage(frameImg, 0, 0, 1280, 720);
+  screenTex.needsUpdate = true;
+};
+socket.on('frame', b64 => {
+  frameImg.src = 'data:image/jpeg;base64,' + b64;
+});
+
+// ── Head tracking ─────────────────────────────────────────────────────────────
+let refSpace       = null;
+let neutralQuat    = null;   // set when grip pressed (recenter)
+let lastHeadSend   = 0;
+const HEAD_MS      = 50;     // 20 Hz
+
+// Quaternion helpers
+function quatMultiply(a, b) {
+  return {
+    x:  a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
+    y:  a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
+    z:  a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,
+    w:  a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z,
+  };
+}
+function quatConjugate(q) { return { x:-q.x, y:-q.y, z:-q.z, w:q.w }; }
+
+function quatToEuler(q) {
+  const { x, y, z, w } = q;
+  const roll  = Math.atan2(2*(w*x + y*z), 1 - 2*(x*x + y*y));
+  const sinp  = 2*(w*y - z*x);
+  const pitch = Math.abs(sinp) >= 1 ? Math.sign(sinp)*Math.PI/2 : Math.asin(sinp);
+  const yaw   = Math.atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z));
+  return { roll, pitch, yaw };
+}
+
+// ── Controller input ──────────────────────────────────────────────────────────
+let lastCtrlSend = 0;
+const CTRL_MS    = 100;   // 10 Hz
+const prevBtns   = {};    // rising-edge detection
+
+function risingEdge(id, pressed) {
+  const was = prevBtns[id] || false;
+  prevBtns[id] = pressed;
+  return pressed && !was;
+}
+
+// Meta Quest 3 button indices (XR Standard Gamepad mapping)
+// buttons[0] = trigger, [1] = grip, [3] = thumbstick click
+// [4] = A (right) / X (left),  [5] = B (right) / Y (left)
+// axes[2] = thumbstick X,  axes[3] = thumbstick Y
+const BTN_TRIGGER = 0, BTN_GRIP = 1, BTN_STICK = 3, BTN_PRIMARY = 4, BTN_SECONDARY = 5;
+const AXIS_STICK_X = 2, AXIS_STICK_Y = 3;
+
+// ── Animation loop ────────────────────────────────────────────────────────────
+renderer.setAnimationLoop((time, frame) => {
+  if (frame) {
+    const session = renderer.xr.getSession();
+
+    // Grab reference space once
+    if (!refSpace) refSpace = renderer.xr.getReferenceSpace();
+
+    // ── Head pose ────────────────────────────────────────────────────────────
+    if (refSpace && time - lastHeadSend > HEAD_MS) {
+      lastHeadSend = time;
+      const viewerPose = frame.getViewerPose(refSpace);
+      if (viewerPose) {
+        let q = viewerPose.transform.orientation;  // DOMPointReadOnly
+
+        // Apply neutral offset if set (recenter)
+        if (neutralQuat) {
+          q = quatMultiply(quatConjugate(neutralQuat), { x:q.x, y:q.y, z:q.z, w:q.w });
+        }
+
+        const { roll, pitch, yaw } = quatToEuler(q);
+        socket.emit('head_pose', { roll, pitch, yaw });
+      }
+    }
+
+    // ── Controller input ─────────────────────────────────────────────────────
+    if (session && time - lastCtrlSend > CTRL_MS) {
+      lastCtrlSend = time;
+      let lx = 0, ly = 0, rx = 0;
+
+      for (const src of session.inputSources) {
+        const gp   = src.gamepad;
+        const hand = src.handedness;
+        if (!gp) continue;
+
+        const btns = gp.buttons;
+        const axes = gp.axes;
+
+        // Grip on either hand = recenter head tracking
+        if (risingEdge(`${hand}_grip`, btns[BTN_GRIP]?.pressed)) {
+          const vp = frame.getViewerPose(refSpace);
+          if (vp) {
+            const o = vp.transform.orientation;
+            neutralQuat = { x: o.x, y: o.y, z: o.z, w: o.w };
+          }
+        }
+
+        if (hand === 'left') {
+          lx =  (axes[AXIS_STICK_X] || 0);    // strafe
+          ly = -(axes[AXIS_STICK_Y] || 0);    // forward (invert: push fwd = positive)
+
+          // X button — toggle light
+          if (risingEdge('left_primary',   btns[BTN_PRIMARY]?.pressed))
+            socket.emit('action', { type: 'toggle_light' });
+          // Y button — stop
+          if (risingEdge('left_secondary', btns[BTN_SECONDARY]?.pressed))
+            socket.emit('action', { type: 'stop' });
+        }
+
+        if (hand === 'right') {
+          rx = (axes[AXIS_STICK_X] || 0);     // rotate
+
+          // A button — lie down
+          if (risingEdge('right_primary',   btns[BTN_PRIMARY]?.pressed))
+            socket.emit('action', { type: 'lie_down' });
+          // B button — stand up
+          if (risingEdge('right_secondary', btns[BTN_SECONDARY]?.pressed))
+            socket.emit('action', { type: 'stand_up' });
+        }
+      }
+
+      socket.emit('controller', { lx, ly, rx });
+    }
+  }
+
+  renderer.render(scene, camera);
+});
+
+// ── Resize handler ────────────────────────────────────────────────────────────
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
